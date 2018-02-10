@@ -17,7 +17,7 @@ namespace librealsense
         const rs2_intrinsics& other_intrin, GET_DEPTH get_depth, TRANSFER_PIXEL transfer_pixel)
     {
         // Iterate over the pixels of the depth image
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(static)
         for (int depth_y = 0; depth_y < depth_intrin.height; ++depth_y)
         {
             int depth_pixel_index = depth_y * depth_intrin.width;

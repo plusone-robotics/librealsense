@@ -234,7 +234,7 @@ namespace librealsense
 #ifdef __SSSE3__
         auto src = reinterpret_cast<const __m128i *>(s);
         auto dst = reinterpret_cast<__m128i *>(d[0]);
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(4)
         for(int i = 0; i < n/16; i++)
         {
             const __m128i zero = _mm_set1_epi8(0);
