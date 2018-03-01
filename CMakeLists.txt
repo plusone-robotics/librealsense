@@ -57,10 +57,21 @@ option(BUILD_GRAPHICAL_EXAMPLES "Build graphical examples and tools." ON)
 
 option(BUILD_WITH_OPENMP "Use OpenMP" ON)
 
+option(USE_SYSTEM_LIBUSB "Use the distribution libusb package" ON)
+if (WIN32)
+    set(USE_SYSTEM_LIBUSB OFF)
+endif()
+
+option(ENABLE_ZERO_COPY "Enable zero copy functionality" OFF)
+if (ENABLE_ZERO_COPY)
+    add_definitions(-DZERO_COPY)
+endif()
+
 if(ANDROID_NDK_TOOLCHAIN_INCLUDED)
     unset(WIN32)
     unset(UNIX)
     unset(APPLE)
+    set(USE_SYSTEM_LIBUSB OFF)
     set(BUILD_WITH_OPENMP OFF)
     set(FORCE_LIBUVC ON)
     set(BUILD_GRAPHICAL_EXAMPLES OFF)
@@ -82,6 +93,8 @@ if(BUILD_WITH_OPENMP)
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
     endif()
 endif()
+
+option(BUILD_WITH_TM2 "Build with support for Intel TM2 tracking device" OFF)
 
 option(BUILD_EASYLOGGINGPP "Build EasyLogging++ as a part of the build" ON)
 
@@ -115,9 +128,11 @@ set(REALSENSE_CPP
     src/linux/backend-hid.cpp
     src/backend.cpp
     src/verify.c
+    src/software-device.cpp
     src/proc/align.cpp
     src/proc/colorizer.cpp
     src/proc/pointcloud.cpp
+    src/proc/occlusion-filter.cpp
     src/proc/synthetic-stream.cpp
     src/proc/syncer-processing-block.cpp
     src/proc/decimation-filter.cpp
@@ -198,6 +213,7 @@ set(REALSENSE_HPP
     src/core/info.h
     src/core/extension.h
     src/core/processing.h
+    src/software-device.h
 
     src/environment.h
     src/device_hub.h
@@ -213,6 +229,7 @@ set(REALSENSE_HPP
     src/proc/align.h
     src/proc/colorizer.h
     src/proc/pointcloud.h
+    src/proc/occlusion-filter.h
     src/proc/synthetic-stream.h
     src/proc/decimation-filter.h
     src/proc/spatial-filter.h
@@ -387,6 +404,7 @@ if(WIN32)
         src/ds5/ds5-active.cpp
         src/ivcam/sr300.cpp
         src/ivcam/ivcam-private.cpp
+        src/software-device.cpp
         )
 
     source_group("Source Files\\Devices\\Advanced Mode" FILES
@@ -412,6 +430,7 @@ if(WIN32)
         src/ds5/ds5-color.h
         src/ivcam/sr300.h
         src/ivcam/ivcam-private.h
+        src/software-device.h
         )
 
     source_group("Header Files\\Core" FILES
@@ -435,6 +454,7 @@ if(WIN32)
         src/proc/synthetic-stream.cpp
         src/proc/align.cpp
         src/proc/pointcloud.cpp
+        src/proc/occlusion-filter.cpp
         src/proc/decimation-filter.cpp
         src/proc/spatial-filter.cpp
         src/proc/temporal-filter.cpp
@@ -446,6 +466,7 @@ if(WIN32)
         src/proc/colorizer.h
         src/proc/align.h
         src/proc/pointcloud.h
+        src/proc/occlusion-filter.h
         src/proc/synthetic-stream.h
         src/proc/decimation-filter.h
         src/proc/spatial-filter.h
@@ -489,7 +510,7 @@ endif()
 
 if(FORCE_LIBUVC)
     set(BACKEND RS2_USE_LIBUVC_BACKEND)
-    
+
     list(APPEND REALSENSE_CPP
     src/libuvc/ctrl.cpp
     src/libuvc/ctrl-gen.cpp
@@ -544,12 +565,20 @@ if(UNIX)
         message(FATAL_ERROR "\n\n PkgConfig package is missing!\n\n")
     endif()
 
-    find_package (Threads REQUIRED)
-    list(APPEND librealsense_PKG_DEPS "Threads")
+    if (USE_SYSTEM_LIBUSB)
+        pkg_search_module(LIBUSB1 REQUIRED libusb-1.0)
+        if(LIBUSB1_FOUND)
+            include_directories(SYSTEM ${LIBUSB1_INCLUDE_DIRS})
+            link_directories(${LIBUSB1_LIBRARY_DIRS})
+            list(APPEND librealsense_PKG_DEPS "libusb-1.0")
+        else()
+            message( FATAL_ERROR "Failed to find libusb-1.0" )
+        endif(LIBUSB1_FOUND)
+    endif()
 
     set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fPIC -pedantic -g -D_BSD_SOURCE")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -pedantic -g -Wno-missing-field-initializers")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch -Wno-multichar")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch -Wno-multichar -Wsequence-point -Wformat-security")
 
     execute_process(COMMAND ${CMAKE_C_COMPILER} -dumpmachine OUTPUT_VARIABLE MACHINE)
     if(${MACHINE} MATCHES "arm-linux-gnueabihf")
@@ -577,13 +606,73 @@ if(HWM_OVER_XU)
     add_definitions(-DHWM_OVER_XU)
 endif()
 
-if(NOT WIN32)
-    add_subdirectory(third-party/libusb/)
-elseif(FORCE_LIBUVC)
-    add_subdirectory(third-party/libusb/)
+if (NOT USE_SYSTEM_LIBUSB)
+    if(NOT WIN32)
+        add_subdirectory(third-party/libusb/)
+    elseif(FORCE_LIBUVC)
+        add_subdirectory(third-party/libusb/)
+    endif()
 endif()
 
 add_subdirectory(third-party/realsense-file)
+
+
+if (BUILD_WITH_TM2)
+    message(STATUS "Building with TM2")
+
+    if(WIN32)
+        source_group("Source Files\\Devices\\Tracking" FILES
+            src/tm2/tm-context.cpp
+            src/tm2/tm-info.cpp
+            src/tm2/tm-device.cpp
+            )
+
+        source_group("Header Files\\Devices\\Tracking" FILES
+            src/tm2/tm-context.h
+            src/tm2/tm-info.h
+            src/tm2/tm-device.h
+            src/tm2/tm-conversions.h
+            src/tm2/controller_event_serializer.h
+            )
+    endif()
+
+    list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
+    find_package(libtm REQUIRED)
+
+    foreach(flag_var
+            CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+            CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
+            CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+            CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO)
+        if(${flag_var} MATCHES "/MD")
+            string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+        endif(${flag_var} MATCHES "/MD")
+    endforeach(flag_var)
+
+    list(APPEND REALSENSE_HPP
+    src/tm2/tm-context.h
+    src/tm2/tm-device.h
+    src/tm2/tm-info.h
+    src/tm2/tm-conversions.h
+    src/tm2/controller_event_serializer.h
+    )
+    
+    list(APPEND REALSENSE_CPP
+    src/tm2/tm-context.cpp
+    src/tm2/tm-device.cpp
+    src/tm2/tm-info.cpp
+    )
+
+    include_directories(${LIBTM_INCLUDE_DIR})
+    set(TRACKING_DEVICE_LIBS libtm)
+
+    install(TARGETS libtm
+        EXPORT realsense2Targets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+endif()
 
 option(BUILD_SHARED_LIBS "Build shared library" ON)
 if(BUILD_SHARED_LIBS)
@@ -604,20 +693,31 @@ else()
     add_library(realsense2 STATIC ${REALSENSE_CPP} ${REALSENSE_HPP})
 endif()
 
+if(BUILD_WITH_TM2)
+    target_compile_definitions(realsense2 PRIVATE WITH_TRACKING=1 BUILD_STATIC=1)
+endif()
 set_target_properties(realsense2 PROPERTIES VERSION ${REALSENSE_VERSION_STRING}
                                 SOVERSION ${REALSENSE_VERSION_MAJOR})
-target_link_libraries(realsense2 PRIVATE realsense-file ${CMAKE_THREAD_LIBS_INIT})
-list(APPEND librealsense_PKG_LIBS ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(realsense2 PRIVATE realsense-file ${CMAKE_THREAD_LIBS_INIT} ${TRACKING_DEVICE_LIBS})
 
-if(NOT WIN32)
-    target_link_libraries(realsense2 PRIVATE usb)
-elseif(FORCE_LIBUVC)
-    target_link_libraries(realsense2 PRIVATE usb)
+if (NOT USE_SYSTEM_LIBUSB)
+    if(NOT WIN32)
+        target_link_libraries(realsense2 PRIVATE usb)
+    elseif(FORCE_LIBUVC)
+        target_link_libraries(realsense2 PRIVATE usb)
+    endif()
+else()
+    target_link_libraries(realsense2 PRIVATE ${LIBUSB1_LIBRARIES})
 endif()
 
 
 add_definitions(-DELPP_THREAD_SAFE)
 add_definitions(-DELPP_NO_DEFAULT_LOG_FILE)
+
+
+list(APPEND librealsense_PKG_LIBS ${CMAKE_THREAD_LIBS_INIT})
+
+
 include_directories(realsense2 src)
 
 set_target_properties (realsense2 PROPERTIES
@@ -633,6 +733,10 @@ target_include_directories(realsense2 PRIVATE
         ${BOOST_INCLUDE_PATH}
         ${LZ4_INCLUDE_PATH}
         )
+
+if (USE_SYSTEM_LIBUSB)
+    target_include_directories(realsense2 PRIVATE ${LIBUSB1_INCLUDE_DIRS})
+endif()
 
 target_include_directories(realsense2 PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                                             $<INSTALL_INTERFACE:include>
@@ -654,12 +758,15 @@ configure_package_config_file(CMake/realsense2Config.cmake.in realsense2Config.c
     INSTALL_DESTINATION ${CMAKECONFIG_INSTALL_DIR}
     INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX}/bin
     PATH_VARS CMAKE_INSTALL_INCLUDEDIR)
+write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/realsense2ConfigVersion.cmake"
+    VERSION ${REALSENSE_VERSION_STRING} COMPATIBILITY AnyNewerVersion)
 
 install(EXPORT realsense2Targets FILE realsense2Targets.cmake NAMESPACE realsense2::
     DESTINATION ${CMAKECONFIG_INSTALL_DIR})
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/realsense2Config.cmake"
     DESTINATION ${CMAKECONFIG_INSTALL_DIR})
-
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/realsense2ConfigVersion.cmake"
+    DESTINATION ${CMAKECONFIG_INSTALL_DIR})
 
 install(CODE "execute_process(COMMAND ldconfig)")
 

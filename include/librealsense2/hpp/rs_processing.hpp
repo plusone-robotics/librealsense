@@ -87,6 +87,13 @@ namespace rs2
             error::handle(e);
         }
 
+        template<class S>
+        S& operator>>(S& on_frame)
+        {
+            start(on_frame);
+            return on_frame;
+        }
+
         void invoke(frame f) const
         {
             rs2_frame* ptr = nullptr;
@@ -171,13 +178,15 @@ namespace rs2
         * \param[out] f - frame handle
         * \return true if new frame was stored to f
         */
-        bool poll_for_frame(frame* f) const
+        template<typename T>
+        typename std::enable_if<std::is_base_of<rs2::frame, T>::value, bool>::type poll_for_frame(T* output) const
         {
             rs2_error* e = nullptr;
             rs2_frame* frame_ref = nullptr;
             auto res = rs2_poll_for_frame(_queue.get(), &frame_ref, &e);
             error::handle(e);
-            if (res) *f = { frame_ref };
+            frame f{ frame_ref };
+            if (res) *output = f;
             return res > 0;
         }
 
@@ -193,19 +202,22 @@ namespace rs2
         size_t _capacity;
     };
 
-    class pointcloud
+    class pointcloud : public options
     {
     public:
         pointcloud() :  _queue(1)
         {
             rs2_error* e = nullptr;
 
-            _block = std::make_shared<processing_block>(
-                                std::shared_ptr<rs2_processing_block>(
-                                                    rs2_create_pointcloud(&e),
-                                                    rs2_delete_processing_block));
+            auto pb = std::shared_ptr<rs2_processing_block>(
+                rs2_create_pointcloud(&e),
+                rs2_delete_processing_block);
+            _block = std::make_shared<processing_block>(pb);
 
             error::handle(e);
+
+            // Redirect options API to the processing block
+            options::operator=(pb);
 
             _block->start(_queue);
         }
@@ -219,8 +231,7 @@ namespace rs2
         void map_to(frame mapped)
         {
             _block->set_option(RS2_OPTION_TEXTURE_SOURCE, float(mapped.get_profile().unique_id()));
-            if (mapped.get_profile().stream_type() != RS2_STREAM_DEPTH)
-                _block->invoke(std::move(mapped));
+            _block->invoke(std::move(mapped));
         }
     private:
         friend class context;
@@ -260,7 +271,8 @@ namespace rs2
     class syncer
     {
     public:
-        syncer()
+        syncer(int queue_size = 1)
+            :_results(queue_size)
         {
             _sync.start(_results);
 
@@ -312,7 +324,7 @@ namespace rs2
             Alignment is performed between a depth image and another image.
             To perform alignment of a depth image to the other, set the align_to parameter with the other stream type.
             To perform alignment of a non depth image to a depth image, set the align_to parameter to RS2_STREAM_DEPTH
-            Camera calibration and frame's stream type are determined on the fly, according to the first valid frameset passed to proccess()
+            Camera calibration and frame's stream type are determined on the fly, according to the first valid frameset passed to process()
 
             * \param[in] align_to      The stream type to which alignment should be made.
         */
@@ -334,7 +346,7 @@ namespace rs2
         * \param[in] frame      A pair of images, where at least one of which is a depth frame
         * \return Input frames aligned to one another
         */
-        frameset proccess(frameset frame)
+        frameset process(frameset frame)
         {
             (*_block)(frame);
             rs2::frame f;
@@ -388,7 +400,18 @@ namespace rs2
          frame_queue _queue;
      };
 
-    class decimation_filter : public options
+    /**
+        Interface for frame processing functionality
+    */
+    class process_interface : public options
+    {
+    public:
+        virtual rs2::frame process(rs2::frame frame) = 0;
+        virtual void operator()(frame f) const = 0;
+        virtual ~process_interface() = default;
+    };
+
+    class decimation_filter : public process_interface
     {
     public:
         decimation_filter() :_queue(1)
@@ -406,7 +429,7 @@ namespace rs2
             _block->start(_queue);
         }
 
-        rs2::frame proccess(rs2::frame frame)
+        rs2::frame process(rs2::frame frame) override
         {
             (*_block)(frame);
             rs2::frame f;
@@ -414,7 +437,7 @@ namespace rs2
             return f;
         }
 
-        void operator()(frame f) const
+        void operator()(frame f) const override
         {
             (*_block)(std::move(f));
         }
@@ -425,7 +448,7 @@ namespace rs2
         frame_queue _queue;
     };
 
-    class temporal_filter : public options
+    class temporal_filter : public process_interface
     {
     public:
         temporal_filter() :_queue(1)
@@ -443,7 +466,7 @@ namespace rs2
             _block->start(_queue);
         }
 
-        rs2::frame proccess(rs2::frame frame)
+        rs2::frame process(rs2::frame frame) override
         {
             (*_block)(frame);
             rs2::frame f;
@@ -451,7 +474,7 @@ namespace rs2
             return f;
         }
 
-        void operator()(frame f) const
+        void operator()(frame f) const override
         {
             (*_block)(std::move(f));
         }
@@ -462,7 +485,7 @@ namespace rs2
         frame_queue _queue;
     };
 
-    class spatial_filter : public options
+    class spatial_filter : public process_interface
     {
     public:
         spatial_filter() :_queue(1)
@@ -480,7 +503,7 @@ namespace rs2
             _block->start(_queue);
         }
 
-        rs2::frame proccess(rs2::frame frame)
+        rs2::frame process(rs2::frame frame) override
         {
             (*_block)(frame);
             rs2::frame f;
@@ -488,7 +511,7 @@ namespace rs2
             return f;
         }
 
-        void operator()(frame f) const
+        void operator()(frame f) const override
         {
             (*_block)(std::move(f));
         }
@@ -499,7 +522,7 @@ namespace rs2
         frame_queue _queue;
     };
 
-    class disparity_transform : public options
+    class disparity_transform : public process_interface
     {
     public:
         disparity_transform(bool transform_to_disparity=true) :_queue(1)
@@ -517,7 +540,7 @@ namespace rs2
             _block->start(_queue);
         }
 
-        rs2::frame proccess(rs2::frame frame)
+        rs2::frame process(rs2::frame frame) override
         {
             (*_block)(frame);
             rs2::frame f;
@@ -525,7 +548,7 @@ namespace rs2
             return f;
         }
 
-        void operator()(frame f) const
+        void operator()(frame f) const override
         {
             (*_block)(std::move(f));
         }

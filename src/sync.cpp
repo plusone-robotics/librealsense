@@ -81,7 +81,7 @@ namespace librealsense
         sync(std::move(f), env);
     }
 
-    std::string create_composite_name(const std::vector<std::shared_ptr<matcher>>& matchers, std::string name)
+    std::string create_composite_name(const std::vector<std::shared_ptr<matcher>>& matchers, const std::string& name)
     {
         std::stringstream s;
         s<<"("<<name;
@@ -414,7 +414,7 @@ namespace librealsense
 
         auto next_expected = _next_expected[missing];
 
-        if((*synced_frame)->get_frame_number() - next_expected > 4)
+        if((*synced_frame)->get_frame_number() - next_expected > 4 || (*synced_frame)->get_frame_number() < next_expected)
         {
             return true;
         }

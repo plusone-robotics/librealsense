@@ -229,6 +229,9 @@ namespace Intel.RealSense
         [DllImport(dllName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void rs2_release_frame(IntPtr frame);
 
+        [DllImport(dllName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void rs2_keep_frame(IntPtr frame);
+
 
         [DllImport(dllName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr rs2_get_frame_vertices(IntPtr frame, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Helpers.ErrorMarshaler))] out object error);
@@ -654,7 +657,7 @@ namespace Intel.RealSense
 
 
         [DllImport(dllName, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern void rs2_load_json(IntPtr dev, IntPtr json_content, uint content_size, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Helpers.ErrorMarshaler))] out object error);
+        internal static extern void rs2_load_json(IntPtr dev, [MarshalAs(UnmanagedType.LPStr)] string json_content, uint content_size, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Helpers.ErrorMarshaler))] out object error);
 
 
         [DllImport(dllName, CallingConvention = CallingConvention.Cdecl)]

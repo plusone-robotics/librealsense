@@ -68,7 +68,6 @@ namespace Intel.RealSense
             object error;
             m_instance = new HandleRef(this, NativeMethods.rs2_create_colorizer(out error));
             queue = new FrameQueue();
-            Options[Option.FramesQueueSize].Value = 0;
             NativeMethods.rs2_start_processing_queue(m_instance.Handle, queue.m_instance.Handle, out error);
         }
 
@@ -90,15 +89,78 @@ namespace Intel.RealSense
             object error;
             m_instance = new HandleRef(this, NativeMethods.rs2_create_align(align_to, out error));
             queue = new FrameQueue();
-            Options[Option.FramesQueueSize].Value = 0;
             NativeMethods.rs2_start_processing_queue(m_instance.Handle, queue.m_instance.Handle, out error);
         }
 
         public FrameSet Process(FrameSet original)
         {
             object error;
+            NativeMethods.rs2_frame_add_ref(original.m_instance.Handle, out error);
             NativeMethods.rs2_process_frame(m_instance.Handle, original.m_instance.Handle, out error);
             return queue.WaitForFrames();
+        }
+
+        FrameQueue queue;
+    }
+
+    public class DecimationFilter : ProcessingBlock
+    {
+        public DecimationFilter()
+        {
+            object error;
+            m_instance = new HandleRef(this, NativeMethods.rs2_create_decimation_filter_block(out error));
+            queue = new FrameQueue();
+            NativeMethods.rs2_start_processing_queue(m_instance.Handle, queue.m_instance.Handle, out error);
+        }
+
+        public VideoFrame ApplyFilter(VideoFrame original)
+        {
+            object error;
+            NativeMethods.rs2_frame_add_ref(original.m_instance.Handle, out error);
+            NativeMethods.rs2_process_frame(m_instance.Handle, original.m_instance.Handle, out error);
+            return queue.WaitForFrame() as VideoFrame;
+        }
+
+        FrameQueue queue;
+    }
+
+    public class SpatialFilter : ProcessingBlock
+    {
+        public SpatialFilter()
+        {
+            object error;
+            m_instance = new HandleRef(this, NativeMethods.rs2_create_spatial_filter_block(out error));
+            queue = new FrameQueue();
+            NativeMethods.rs2_start_processing_queue(m_instance.Handle, queue.m_instance.Handle, out error);
+        }
+
+        public VideoFrame ApplyFilter(VideoFrame original)
+        {
+            object error;
+            NativeMethods.rs2_frame_add_ref(original.m_instance.Handle, out error);
+            NativeMethods.rs2_process_frame(m_instance.Handle, original.m_instance.Handle, out error);
+            return queue.WaitForFrame() as VideoFrame;
+        }
+
+        FrameQueue queue;
+    }
+
+    public class TemporalFilter : ProcessingBlock
+    {
+        public TemporalFilter()
+        {
+            object error;
+            m_instance = new HandleRef(this, NativeMethods.rs2_create_temporal_filter_block(out error));
+            queue = new FrameQueue();
+            NativeMethods.rs2_start_processing_queue(m_instance.Handle, queue.m_instance.Handle, out error);
+        }
+
+        public VideoFrame ApplyFilter(VideoFrame original)
+        {
+            object error;
+            NativeMethods.rs2_frame_add_ref(original.m_instance.Handle, out error);
+            NativeMethods.rs2_process_frame(m_instance.Handle, original.m_instance.Handle, out error);
+            return queue.WaitForFrame() as VideoFrame;
         }
 
         FrameQueue queue;

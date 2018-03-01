@@ -14,6 +14,7 @@
 
 #include "ds5-timestamp.h"
 #include "ds5-options.h"
+#include "ds5-private.h"
 #include "ds5-motion.h"
 #include "core/motion.h"
 #include "stream.h"
@@ -44,7 +45,7 @@ namespace librealsense
         region_of_interest _roi{};
     };
 
-    class ds5_hid_sensor : public hid_sensor, public motion_sensor_interface
+    class ds5_hid_sensor : public hid_sensor
     {
     public:
         explicit ds5_hid_sensor(ds5_motion* owner, std::shared_ptr<platform::hid_device> hid_device,
@@ -57,7 +58,7 @@ namespace librealsense
         {
         }
 
-        rs2_motion_device_intrinsic get_motion_intrinsics(rs2_stream stream) const override
+        rs2_motion_device_intrinsic get_motion_intrinsics(rs2_stream stream) const 
         {
             return _owner->get_motion_intrinsics(stream);
         }
@@ -75,10 +76,19 @@ namespace librealsense
                 if (p->get_stream_type() == RS2_STREAM_GYRO)
                     assign_stream(_owner->_gyro_stream, p);
                 if (p->get_stream_type() == RS2_STREAM_GPIO)
-                    assign_stream(_owner->_gpio_streams[p->get_stream_index()], p);
-                if (p->get_framerate() == 1000)
+                    assign_stream(_owner->_gpio_streams[p->get_stream_index()-1], p);
+                if (p->get_framerate() == 1000 &&
+                    p->get_format() == RS2_FORMAT_MOTION_XYZ32F)
                     p->make_default();
 
+                //set motion intrinsics
+                if (p->get_stream_type() == RS2_STREAM_ACCEL || p->get_stream_type() == RS2_STREAM_GYRO)
+                {
+                    auto motion = dynamic_cast<motion_stream_profile_interface*>(p.get()); 
+                    assert(motion); //Expecting to succeed for motion stream (since we are under the "if")
+                    auto st = p->get_stream_type();
+                    motion->set_intrinsics([this, st]() { return get_motion_intrinsics(st); });
+                }
             }
 
             return results;
@@ -99,7 +109,7 @@ namespace librealsense
         rs2_intrinsics get_intrinsics(const stream_profile& profile) const override
         {
             return get_intrinsic_by_resolution(
-                *_owner->_fisheye_intrinsics_raw,
+                *_owner->_fisheye_calibration_table_raw,
                 ds::calibration_table_id::fisheye_calibration_id,
                 profile.width, profile.height);
         }
@@ -150,32 +160,18 @@ namespace librealsense
         throw std::runtime_error(to_string() << "Motion Intrinsics unknown for stream " << rs2_stream_to_string(stream) << "!");
     }
 
-    std::vector<uint8_t> ds5_motion::get_raw_fisheye_intrinsics_table() const
+    std::vector<uint8_t> ds5_motion::get_tm1_eeprom_raw() const
     {
-        const int offset = 0x84;
-        const int size = 0x98;
+        const int offset = 0;
+        const int size = ds::tm1_eeprom_size;
         command cmd(ds::MMER, offset, size);
         return _hw_monitor->send(cmd);
     }
 
-    ds::imu_calibration_table ds5_motion::get_motion_module_calibration_table() const
+    ds::tm1_eeprom ds5_motion::get_tm1_eeprom() const
     {
-        const int offset = 0x134;
-        const int size = sizeof(ds::imu_calibration_table);
-        command cmd(ds::MMER, offset, size);
-        auto result = _hw_monitor->send(cmd);
-        if (result.size() < sizeof(ds::imu_calibration_table))
-            throw std::runtime_error("Not enough data returned from the device!");
-
-        auto table = ds::check_calib<ds::imu_calibration_table>(result);
-
+        auto table = ds::check_calib<ds::tm1_eeprom>(*_tm1_eeprom_raw);
         return *table;
-    }
-
-    std::vector<uint8_t> ds5_motion::get_raw_fisheye_extrinsics_table() const
-    {
-        command cmd(ds::GET_EXTRINSICS);
-        return _hw_monitor->send(cmd);
     }
 
     std::shared_ptr<hid_sensor> ds5_motion::create_hid_device(std::shared_ptr<context> ctx,
@@ -276,11 +272,16 @@ namespace librealsense
 
         auto&& backend = ctx->get_backend();
 
-        _fisheye_intrinsics_raw = [this]() { return get_raw_fisheye_intrinsics_table(); };
-        _fisheye_extrinsics_raw = [this]() { return get_raw_fisheye_extrinsics_table(); };
-        _motion_module_extrinsics_raw = [this]() { return get_motion_module_calibration_table().imu_to_fisheye; };
-        _accel_intrinsics = [this](){ return get_motion_module_calibration_table().accel_intrinsics; };
-        _gyro_intrinsics = [this](){ return get_motion_module_calibration_table().gyro_intrinsics; };
+        _tm1_eeprom_raw = [this]() { return get_tm1_eeprom_raw(); };
+        _tm1_eeprom = [this]() { return get_tm1_eeprom(); };
+
+        _fisheye_calibration_table_raw = [this]()
+        {
+            uint8_t* fe_calib_ptr = reinterpret_cast<uint8_t*>(&(*_tm1_eeprom).calibration_table.calib_model.fe_calibration);
+            return std::vector<uint8_t>(fe_calib_ptr, fe_calib_ptr+ fisheye_calibration_table_size);
+        };
+        _accel_intrinsics = [this]() { return (*_tm1_eeprom).calibration_table.imu_calib_table.accel_intrinsics; };
+        _gyro_intrinsics = [this](){ return (*_tm1_eeprom).calibration_table.imu_calib_table.gyro_intrinsics; };
 
         std::string motion_module_fw_version = "";
         if (_fw_version >= firmware_version("5.5.8.0"))
@@ -358,26 +359,28 @@ namespace librealsense
         // Add fisheye endpoint
         _fisheye_device_idx = add_sensor(fisheye_ep);
 
-        _depth_to_fisheye = std::make_shared<lazy<rs2_extrinsics>>([this]()
-        {
-            auto extr = get_fisheye_extrinsics_data(*_fisheye_extrinsics_raw);
-            return from_pose(inverse(extr));
-        });
+        // Not applicable for TM1
+        //_depth_to_fisheye = std::make_shared<lazy<rs2_extrinsics>>([this]() 
+        //{
+        //    auto extr = get_fisheye_extrinsics_data(*_fisheye_extrinsics_raw);
+        //    return from_pose(inverse(extr));
+        //});
 
         _fisheye_to_imu = std::make_shared<lazy<rs2_extrinsics>>([this]()
         {
-            auto motion_extr = *_motion_module_extrinsics_raw;
+            auto fe_calib = (*_tm1_eeprom).calibration_table.calib_model.fe_calibration;
 
-            auto rot = motion_extr.rotation;
-            auto trans = motion_extr.translation;
+            auto rot = fe_calib.fisheye_to_imu.rotation;
+            auto trans = fe_calib.fisheye_to_imu.translation;
 
-            pose ex = { { rot(0,0), rot(1,0),rot(2,0),rot(1,0), rot(1,1),rot(2,1),rot(0,2), rot(1,2),rot(2,2) },
+            pose ex = { { rot(0,0), rot(1,0),rot(2,0),rot(0,1), rot(1,1),rot(2,1),rot(0,2), rot(1,2),rot(2,2) },
             { trans[0], trans[1], trans[2] } };
 
             return from_pose(ex);
         });
 
-        environment::get_instance().get_extrinsics_graph().register_extrinsics(*_depth_stream, *_fisheye_stream, _depth_to_fisheye);
+        // Depth->Fisheye is not available
+        //environment::get_instance().get_extrinsics_graph().register_extrinsics(*_depth_stream, *_fisheye_stream, _depth_to_fisheye);
         environment::get_instance().get_extrinsics_graph().register_extrinsics(*_fisheye_stream, *_accel_stream, _fisheye_to_imu);
 
         register_stream_to_extrinsic_group(*_fisheye_stream, 0);
@@ -412,16 +415,5 @@ namespace librealsense
         if (!motion_module_fw_version.empty())
             register_info(RS2_CAMERA_INFO_FIRMWARE_VERSION, motion_module_fw_version);
 
-    }
-
-    std::shared_ptr<matcher> ds5_motion::create_matcher(const frame_holder& frame) const
-    {
-        std::set<stream_interface*> streams = { _fisheye_stream.get() , _accel_stream.get() , _gyro_stream.get()};
-        std::vector<std::shared_ptr<matcher>> mm_matchers;
-
-        for (auto& s : streams)
-            mm_matchers.push_back(std::make_shared<identity_matcher>( s->get_unique_id(), s->get_stream_type()));
-
-        return std::make_shared<timestamp_composite_matcher>(mm_matchers);
     }
 }

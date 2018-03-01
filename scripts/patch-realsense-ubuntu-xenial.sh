@@ -3,12 +3,19 @@
 #Break execution on any error received
 set -e
 
+#Locally suppress stderr to avoid raising not relevant messages
+exec 2>/dev/null
+
 if [ $(ls /dev/video* | wc -l) -ne 0 ];
 then
+	# Restore stderr
+	exec 2>&1
 	echo -e "\e[32m"
 	read -p "Remove all RealSense cameras attached. Hit any key when ready"
 	echo -e "\e[0m"
 fi
+# Restore stderr
+exec 2>&1
 
 #Include usability functions
 source ./scripts/patch-utils.sh
