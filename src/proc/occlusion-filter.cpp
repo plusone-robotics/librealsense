@@ -26,12 +26,11 @@ namespace librealsense
         case occlusion_none:
             break;
         case occlusion_monotonic_scan:
-        case occlusion_exhaustic_search:
             monotonic_heuristic_invalidation(points, uv_map, pix_coord);
             break;
-        /*case occlusion_exhaustic_search:                              TODO - additional validation work is required
+        case occlusion_exhaustic_search:
             comprehensive_invalidation(points, uv_map, pix_coord);
-            break;*/
+            break;
         default:
             throw std::runtime_error(to_string() << "Unsupported occlusion filter type " << _occlusion_filter << " requested");
             break;
@@ -44,7 +43,7 @@ namespace librealsense
     // -  Use the uv texels calculated when projecting depth to color
     // -  Scan each line from left to right and check the the U coordinate in the mapping is raising monotonically.
     // -  The occlusion is designated as U coordinate for a given pixel is less than the U coordinate of the predecessing pixel.
-    // -  The UV mapping for the occluded pixel is reset to (0,0). Later on the (0,0) coordinate in the texture map is overwritten 
+    // -  The UV mapping for the occluded pixel is reset to (0,0). Later on the (0,0) coordinate in the texture map is overwritten
     //    with a invalidation color such as black/magenta according to the purpose (production/debugging)
     void occlusion_filter::monotonic_heuristic_invalidation(float3* points, float2* uv_map, const std::vector<float2> & pix_coord) const
     {
@@ -83,7 +82,7 @@ namespace librealsense
                         }
                     }
                 }
-                
+
                 ++points;
                 ++uv_map;
                 ++pixels_ptr;
@@ -108,7 +107,7 @@ namespace librealsense
         size_t points_width = _depth_intrinsics->width;
         size_t points_height = _depth_intrinsics->height;
 
-        static const float z_threshold = 0.05f; // Compensate for temporal noise when comparing Z values - significal occlusion
+        static const float z_threshold = 0.05f; // Compensate for temporal noise when comparing Z values
 
         // Clear previous data
         memset((void*)(_texels_depth.data()), 0, _texels_depth.size() * sizeof(float));

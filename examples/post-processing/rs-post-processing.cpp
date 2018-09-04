@@ -34,10 +34,10 @@ Class to encapsulate a filter alongside its options
 class filter_options
 {
 public:
-    filter_options(const std::string name, rs2::process_interface& filter);
+    filter_options(const std::string name, rs2::processing_block& filter);
     filter_options(filter_options&& other);
     std::string filter_name;                                   //Friendly name of the filter
-    rs2::process_interface& filter;                            //The filter in use
+    rs2::processing_block& filter;                            //The filter in use
     std::map<rs2_option, filter_slider_ui> supported_options;  //maps from an option supported by the filter, to the corresponding slider
     std::atomic_bool is_enabled;                               //A boolean controlled by the user that determines whether to apply the filter or not
 };
@@ -69,7 +69,7 @@ int main(int argc, char * argv[]) try
     // Start streaming with the above configuration
     pipe.start(cfg);
 
-    // Decalre filters
+    // Declare filters
     rs2::decimation_filter dec_filter;  // Decimation - reduces depth frame density
     rs2::spatial_filter spat_filter;    // Spatial    - edge-preserving spatial smoothing
     rs2::temporal_filter temp_filter;   // Temporal   - reduces temporal noise
@@ -82,7 +82,7 @@ int main(int argc, char * argv[]) try
     // Initialize a vector that holds filters and their options
     std::vector<filter_options> filters;
 
-    // The following order of emplacment will dictate the orders in which filters are applied
+    // The following order of emplacement will dictate the orders in which filters are applied
     filters.emplace_back("Decimate", dec_filter);
     filters.emplace_back(disparity_filter_name, depth_to_disparity);
     filters.emplace_back("Spatial", spat_filter);
@@ -105,7 +105,7 @@ int main(int argc, char * argv[]) try
         {
             rs2::frameset data = pipe.wait_for_frames(); // Wait for next set of frames from the camera
             rs2::frame depth_frame = data.get_depth_frame(); //Take the depth frame from the frameset
-            if (!depth_frame) // Should not happen but if the pipeline is configured differently 
+            if (!depth_frame) // Should not happen but if the pipeline is configured differently
                 return;       //  it might not provide depth and we don't want to crash
 
             rs2::frame filtered = depth_frame; // Does not copy the frame, only adds a reference
@@ -140,7 +140,7 @@ int main(int argc, char * argv[]) try
             // Note, pushing to two different queues might cause the application to display
             //  original and filtered pointclouds from different depth frames
             //  To make sure they are synchronized you need to push them together or add some
-            //  synchronization mechanisms 
+            //  synchronization mechanisms
             filtered_data.enqueue(filtered);
             original_data.enqueue(depth_frame);
         }
@@ -162,7 +162,7 @@ int main(int argc, char * argv[]) try
     // We'll use rotation_velocity to rotate the pointcloud for a better view of the filters effects
     float rotation_velocity = 0.3f;
 
-    while (app) 
+    while (app)
     {
         float w = static_cast<float>(app.width());
         float h = static_cast<float>(app.height());
@@ -232,7 +232,7 @@ void update_data(rs2::frame_queue& data, rs2::frame& colorized_depth, rs2::point
     if (data.poll_for_frame(&f))  // Try to take the depth and points from the queue
     {
         points = pc.calculate(f); // Generate pointcloud from the depth data
-        colorized_depth = color_map(f);     // Colorize the depth frame with a color map
+        colorized_depth = color_map.process(f);     // Colorize the depth frame with a color map
         pc.map_to(colorized_depth);         // Map the colored depth to the point cloud
         view.tex.upload(colorized_depth);   //  and upload the texture to the view (without this the view will be B&W)
     }
@@ -348,7 +348,7 @@ bool filter_slider_ui::is_all_integers(const rs2::option_range& range)
 /**
 Constructor for filter_options, takes a name and a filter.
 */
-filter_options::filter_options(const std::string name, rs2::process_interface& filter) :
+filter_options::filter_options(const std::string name, rs2::processing_block& filter) :
     filter_name(name),
     filter(filter),
     is_enabled(true)

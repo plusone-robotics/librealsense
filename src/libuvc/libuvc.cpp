@@ -55,7 +55,7 @@ namespace librealsense
     {
         static void internal_uvc_callback(uvc_frame_t *frame, void *ptr);
 
-        static std::string get_usb_port_id(libusb_device* usb_device)
+        static std::tuple<std::string,uint16_t>  get_usb_descriptors(libusb_device* usb_device)
         {
             auto usb_bus = std::to_string(libusb_get_bus_number(usb_device));
 
@@ -65,13 +65,16 @@ namespace librealsense
             std::stringstream port_path;
             auto port_count = libusb_get_port_numbers(usb_device, usb_ports, max_usb_depth);
             auto usb_dev = std::to_string(libusb_get_device_address(usb_device));
+            auto speed = libusb_get_device_speed(usb_device);
+            libusb_device_descriptor dev_desc;
+            auto r= libusb_get_device_descriptor(usb_device,&dev_desc);
 
             for (size_t i = 0; i < port_count; ++i)
             {
                 port_path << std::to_string(usb_ports[i]) << (((i+1) < port_count)?".":"");
             }
 
-            return usb_bus + "-" + port_path.str() + "-" + usb_dev;
+            return std::make_tuple(usb_bus + "-" + port_path.str() + "-" + usb_dev,dev_desc.bcdUSB);
         }
 
         class uvclib_usb_device : public usb_device
@@ -110,16 +113,16 @@ namespace librealsense
             {
                 // Obtain libusb_device_handle for each device
                 libusb_device ** list = nullptr;
-                int status = libusb_get_device_list(usb_context, &list);
+                auto devices = libusb_get_device_list(usb_context, &list);
 
-                if(status < 0)
-                    throw linux_backend_exception(to_string() << "libusb_get_device_list(...) returned " << libusb_error_name(status));
+                if(devices < 0)
+                    throw linux_backend_exception(to_string() << "libusb_get_device_list(...) returned " << libusb_error_name(devices));
 
-                for(int i=0; i < status; ++i)
+                for(int i=0; i < devices; ++i)
                 {
                     libusb_device * usb_device = list[i];
                     libusb_config_descriptor *config;
-                    status = libusb_get_active_config_descriptor(usb_device, &config);
+                    auto status = libusb_get_active_config_descriptor(usb_device, &config);
                     if(status == 0)
                     {
                         auto parent_device = libusb_get_parent(usb_device);
@@ -127,7 +130,9 @@ namespace librealsense
                         {
                             usb_device_info info{};
                             std::stringstream ss;
-                            info.unique_id = get_usb_port_id(usb_device);
+                            auto usb_params = get_usb_descriptors(usb_device);
+                            info.unique_id = std::get<0>(usb_params);
+                            info.conn_spec = static_cast<usb_spec>(std::get<1>(usb_params));
                             info.mi = config->bNumInterfaces - 1; // The hardware monitor USB interface is expected to be the last one
                             action(info, usb_device);
                         }
@@ -184,9 +189,9 @@ namespace librealsense
 
         /* callback context send for each frame for its specific profile */
         struct callback_context {
-          frame_callback _callback;
-          stream_profile _profile;
-          libuvc_uvc_device *_this;
+            frame_callback _callback;
+            stream_profile _profile;
+            libuvc_uvc_device *_this;
         };
 
         /* implements uvc_device for libUVC support */
@@ -216,8 +221,9 @@ namespace librealsense
                 while (device_list[i] != NULL) {
                     // get the internal device object so we can use the libusb handle.
                     dev = (uvc_device_internal *) device_list[i];
-                    // set up the unique id for the device.
-                    info.unique_id = get_usb_port_id(dev->usb_dev);
+                    auto usb_params = get_usb_descriptors(dev->usb_dev);
+                    info.unique_id = std::get<0>(usb_params);
+                    info.conn_spec = static_cast<usb_spec>(std::get<1>(usb_params));
 
                     // get device descriptor.
                     res = uvc_get_device_descriptor((uvc_device_t *)dev, &device_desc);
@@ -245,7 +251,7 @@ namespace librealsense
 
             /* responsible for a specific uvc device.*/
             libuvc_uvc_device(const uvc_device_info& info)
-                    : _name(""), _info(),
+                    : _info(),
                       _is_capturing(false)
             {
                 uvc_error_t res;
@@ -265,14 +271,22 @@ namespace librealsense
                                            _info = i;
                                            _device_path = i.device_path;
                                            _interface = i.mi;
+                                           _device_usb_spec = i.conn_spec;
                                        }
                                    });
-                if (_name == "")
+                if (_name == "") {
                     throw linux_backend_exception("device is no longer connected!");
+                }
+
+                _state_change_time = 0;
+                _is_power_thread_alive = true;
+                _thread_handle = std::thread(std::bind(&libuvc_uvc_device::power_thread,this));
             }
 
             ~libuvc_uvc_device()
             {
+                _is_power_thread_alive = false;
+                _thread_handle.join();
                 _is_capturing = false;
                 uvc_exit(_ctx);
             }
@@ -294,8 +308,7 @@ namespace librealsense
                 if (res < 0) {
                     uvc_close(_device_handle);
                     uvc_unref_device(_device);
-                    throw linux_backend_exception(
-                            "Could not get stream format.");
+                    throw linux_backend_exception("Could not get stream format.");
                 }
 
                 // add to the vector of profiles.
@@ -307,26 +320,22 @@ namespace librealsense
             /* request to start streaming*/
             void stream_on(std::function<void(const notification& n)> error_handler) override
             {
-              uvc_error_t res;
-              // loop over each prfile and start streaming.
-              for (auto i=0;i< _profiles.size(); ++i) {
-                callback_context *context = new callback_context();
-                context->_callback = _callbacks[i];
-                context->_this = this;
-                context->_profile = _profiles[i];
+                uvc_error_t res;
+                // loop over each prfile and start streaming.
+                for (auto i=0; i < _profiles.size(); ++i) {
+                    callback_context *context = new callback_context();
+                    context->_callback = _callbacks[i];
+                    context->_this = this;
+                    context->_profile = _profiles[i];
 
-                res = uvc_start_streaming(_device_handle,
-                                          &_stream_ctrls[i],
-                                          internal_uvc_callback,
-                                          context,
-                                          0);
+                    res = uvc_start_streaming(_device_handle,
+                                              &_stream_ctrls[i],
+                                              internal_uvc_callback,
+                                              context,
+                                              0);
 
-                if (res < 0) {
-                  throw linux_backend_exception(
-                          "fail to start streaming.");
-
+                    if (res < 0) throw linux_backend_exception("fail to start streaming.");
                 }
-              }
             }
 
             void start_callbacks() override
@@ -347,58 +356,81 @@ namespace librealsense
                     _is_capturing = false;
                     _is_started = false;
                 }
-
+                uvc_stop_streaming(_device_handle);
             }
 
-            void set_power_state(power_state state) override {
+            void power_D0() {
                 uvc_error_t res;
                 uvc_format_t *formats;
+
+                res = uvc_find_device(_ctx, &_device, _info.vid, _info.pid, NULL,
+                                      [&](uvc_device_t* device){
+                    auto dev = (uvc_device_internal *) device;
+                    auto usb_params = get_usb_descriptors(dev->usb_dev);
+                    return _info.unique_id == std::get<0>(usb_params);
+                });
+
+                if (res < 0)
+                    throw linux_backend_exception("Could not find the device.");
+                res = uvc_open2(_device, &_device_handle, _interface);
+
+                if (res < 0) {
+                    uvc_unref_device(_device);
+                    _device = NULL;
+                    throw linux_backend_exception("Could not open device.");
+                }
+
+                for(auto ct = uvc_get_input_terminals(_device_handle);
+                    ct; ct = ct->next) {
+                    _input_terminal = ct->bTerminalID;
+                }
+
+                for(auto pu = uvc_get_processing_units(_device_handle);
+                    pu; pu = pu->next) {
+                    _processing_unit = pu->bUnitID;
+                }
+
+                for(auto eu = uvc_get_extension_units(_device_handle);
+                    eu; eu = eu->next) {
+                    _extension_unit = eu->bUnitID;
+                }
+
+                _real_state = D0;
+            }
+
+            void power_D3() {
+
+              uvc_unref_device(_device);
+                //uvc_stop_streaming(_device_handle);
+                _profiles.clear();
+                uvc_close(_device_handle);
+                _device = NULL;
+                _device_handle = NULL;
+                _real_state = D3;
+            }
+            
+            void set_power_state(power_state state) override {
+                std::lock_guard<std::mutex> lock(_power_mutex);
+
                 /* if power became on and it was originally off. open the uvc device. */
                 if (state == D0 && _state == D3) {
-                    res = uvc_find_device(_ctx, &_device, _info.vid, _info.pid, NULL);
 
-                    if (res < 0) {
-                        throw linux_backend_exception(
-                                "Could not find the device.");
+                    // disable change state aggregation in case exists at the moment.
+                    _state_change_time = 0;
+
+                    if ( _real_state == D3) {
+                        power_D0();
                     }
-                    res = uvc_open2(_device, &_device_handle, _interface);
-
-                    if (res < 0) {
-                        uvc_unref_device(_device);
-                        _device = NULL;
-                        throw linux_backend_exception(
-                                "Could not open device.");
-                    }
-
-                    for(auto ct = uvc_get_input_terminals(_device_handle);
-                        ct; ct = ct->next) {
-                        _input_terminal = ct->bTerminalID;
-                    }
-
-                    for(auto pu = uvc_get_processing_units(_device_handle);
-                        pu; pu = pu->next) {
-                        _processing_unit = pu->bUnitID;
-                    }
-
-                    for(auto eu = uvc_get_extension_units(_device_handle);
-                        eu; eu = eu->next) {
-                        _extension_unit = eu->bUnitID;
-                    }
-
                 }
                 else {
-                    // we have been asked to close the device.
-                    uvc_unref_device(_device);
-                    uvc_stop_streaming(_device_handle);
-                    _profiles.clear();
-                    uvc_close(_device_handle);
-                    _device = NULL;
-                    _device_handle = NULL;
+                    // we have been asked to close the device. queue the request for several seconds
+                    // just in case a quick turn on come right over.
 
-
+                    _state_change_time = std::clock();
                 }
 
-                _state = state;
+              _state = state;
+
             }
             power_state get_power_state() const override { return _state; }
 
@@ -621,6 +653,8 @@ namespace librealsense
 
             std::string get_device_location() const override { return _device_path; }
 
+            usb_spec get_usb_specification() const override { return _device_usb_spec; }
+
             /* received a frame and call the callback. */
             void uvc_callback(uvc_frame_t *frame, frame_callback callback, stream_profile profile) {
                 frame_object fo{ frame->data_bytes,
@@ -632,10 +666,42 @@ namespace librealsense
                           []() mutable {} );
             }
 
+          void power_thread() {
+              do {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+
+                std::lock_guard<std::mutex> lock(_power_mutex);
+
+                if (_state_change_time != 0) {
+                    clock_t now_time = std::clock();
+
+                    if (now_time - _state_change_time > 1000 ) {
+
+                        // power state should change.
+                        _state_change_time = 0;
+
+                        if (_real_state == D0) {
+                            power_D3();
+                            _real_state = D3;
+
+                        }
+                    }
+                }
+            } while(_is_power_thread_alive);
+          }
+
         private:
+
+            std::mutex _power_mutex;
+            std::thread _thread_handle;
+            std::atomic<bool> _is_power_thread_alive;
+            power_state _real_state = D3;
+            std::clock_t _state_change_time;
+
             power_state _state = D3;
-            std::string _name;
-            std::string _device_path;
+            std::string _name = "";
+            std::string _device_path = "";
+            usb_spec _device_usb_spec = usb_undefined;
             uvc_device_info _info;
 
             std::vector<stream_profile> _profiles;
@@ -662,14 +728,15 @@ namespace librealsense
 
             device->uvc_callback(frame, context->_callback, context->_profile);
         }
-
-        /* implements backend. provide a libuvc backend. */
+      
+      /* implements backend. provide a libuvc backend. */
         class libuvc_backend : public backend
         {
         public:
             std::shared_ptr<uvc_device> create_uvc_device(uvc_device_info info) const override
             {
-                return std::make_shared<libuvc_uvc_device>(info);
+                return std::make_shared<retry_controls_work_around>(
+                    std::make_shared<libuvc_uvc_device>(info));
             }
 
             /* query UVC devices on the system */

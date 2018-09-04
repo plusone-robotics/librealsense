@@ -3,14 +3,12 @@
 
 #pragma once
 
-//#include "metadata.h"
 #include "backend.h"
 #include "types.h"
 
 #include <map>
 #include <iomanip>
 
-const double TIMESTAMP_USEC_TO_MSEC = 0.001;
 
 namespace librealsense
 {
@@ -59,26 +57,37 @@ namespace librealsense
             ds::RS_USB2_PID
         };
 
+        static const std::set<std::uint16_t> multi_sensors_pid = {
+            ds::RS400_MM_PID,
+            ds::RS410_MM_PID,
+            ds::RS415_PID,
+            ds::RS420_MM_PID,
+            ds::RS430_MM_PID,
+            ds::RS430_MM_RGB_PID,
+            ds::RS435_RGB_PID
+        };
+
         static const std::map<std::uint16_t, std::string> rs400_sku_names = {
-            { RS400_PID,    "Intel RealSense 400"},
-            { RS400_MM_PID, "Intel RealSense 400 with Tracking Module"},
-            { RS410_PID,    "Intel RealSense 410"},
-            { RS410_MM_PID, "Intel RealSense 410 with Tracking Module"},
-            { RS415_PID,    "Intel RealSense 415"},
-            { RS420_PID,    "Intel RealSense 420"},
-            { RS420_MM_PID, "Intel RealSense 420 with Tracking Module"},
-            { RS430_PID,    "Intel RealSense 430"},
-            { RS430_MM_PID, "Intel RealSense 430 with Tracking Module"},
-            { RS430_MM_PID, "Intel RealSense 430 with Tracking Module and RGB Module"},
-            { RS435_RGB_PID,"Intel RealSense 435"},
-            { RS460_PID,    "Intel RealSense 460" },
-            { RS405_PID,    "Intel RealSense 405" },
-            { RS_USB2_PID,  "Intel RealSense USB2" }
+            { RS400_PID,        "Intel RealSense D400"},
+            { RS400_MM_PID,     "Intel RealSense D400 with Tracking Module"},
+            { RS410_PID,        "Intel RealSense D410"},
+            { RS410_MM_PID,     "Intel RealSense D410 with Tracking Module"},
+            { RS415_PID,        "Intel RealSense D415"},
+            { RS420_PID,        "Intel RealSense D420"},
+            { RS420_MM_PID,     "Intel RealSense D420 with Tracking Module"},
+            { RS430_PID,        "Intel RealSense D430"},
+            { RS430_MM_PID,     "Intel RealSense D430 with Tracking Module"},
+            { RS430_MM_PID,     "Intel RealSense D430 with Tracking Module and RGB Module"},
+            { RS435_RGB_PID,    "Intel RealSense D435"},
+            { RS460_PID,        "Intel RealSense D460" },
+            { RS405_PID,        "Intel RealSense D405" },
+            { RS_USB2_PID,      "Intel RealSense USB2" }
         };
 
         // DS5 fisheye XU identifiers
         const uint8_t FISHEYE_EXPOSURE = 1;
 
+                                                // subdevice[h] unit[fw], node[h] guid[fw]
         const platform::extension_unit depth_xu = { 0, 3, 2,
         { 0xC9606CCB, 0x594C, 0x4D25,{ 0xaf, 0x47, 0xcc, 0xc4, 0x96, 0x43, 0x59, 0x95 } } };
 
@@ -100,6 +109,8 @@ namespace librealsense
             GETAEROI        = 0x45,     // get auto-exposure region of interest
             MMER            = 0x4F,     // MM EEPROM read ( from DS5 cache )
             GET_EXTRINSICS  = 0x53,     // get extrinsics
+            SET_CAM_SYNC    = 0x69,     // set Inter-cam HW sync mode [0-default, 1-master, 2-slave]
+            GET_CAM_SYNC    = 0x6A,     // fet Inter-cam HW sync mode
         };
 
         const int etDepthTableControl = 9; // Identifier of the depth table control
@@ -109,6 +120,14 @@ namespace librealsense
             GET_VAL = 0,
             GET_MIN = 1,
             GET_MAX = 2,
+        };
+
+        enum inter_cam_sync_mode
+        {
+            INTERCAM_SYNC_DEFAULT,
+            INTERCAM_SYNC_MASTER,
+            INTERCAM_SYNC_SLAVE,
+            INTERCAM_SYNC_MAX
         };
 
         const std::string DEPTH_STEREO = "Stereo Module";
@@ -236,7 +255,7 @@ namespace librealsense
             uint8_t             ta[10];
             uint32_t            board_num;                  // SKU id
             uint32_t            board_rev;                  // 0
-            uint8_t             reserved[34];               // Align to 64 byte ??? 
+            uint8_t             reserved[34];               // Align to 64 byte ???
         };
 
         constexpr size_t tm1_module_info_size = sizeof(tm1_module_info);
@@ -407,9 +426,61 @@ namespace librealsense
         enum ds5_notifications_types
         {
             success = 0,
-            hot_laser_power_reduce  = 1, // reported to error depth XU control
-            hot_laser_disable       = 2, // reported to error depth XU control
-            flag_B_laser_disable    = 3 // reported to error depth XU control
+            hot_laser_power_reduce,
+            hot_laser_disable,
+            flag_B_laser_disable,
+            stereo_module_not_connected,
+            eeprom_corrupted,
+            calibration_corrupted,
+            mm_upd_fail,
+            isp_upd_fail,
+            mm_force_pause,
+            mm_failure,
+            usb_scp_overflow,
+            usb_rec_overflow,
+            usb_cam_overflow,
+            mipi_left_error,
+            mipi_right_error,
+            mipi_rt_error,
+            mipi_fe_error,
+            i2c_cfg_left_error,
+            i2c_cfg_right_error,
+            i2c_cfg_rt_error,
+            i2c_cfg_fe_error,
+            stream_not_start_z,
+            stream_not_start_y,
+            stream_not_start_cam,
+            rec_error,
+        };
+
+        // Elaborate FW XU report. The reports may be consequently extended for PU/CTL/ISP
+        const std::map< uint8_t, std::string> ds5_fw_error_report = {
+            { success,                      "Success" },
+            { hot_laser_power_reduce,       "Laser hot - power reduce" },
+            { hot_laser_disable,            "Laser hot - disabled" },
+            { flag_B_laser_disable,         "Flag B - laser disabled" },
+            { stereo_module_not_connected,  "Stered Module is not connected" },
+            { eeprom_corrupted,             "EEPROM corrupted" },
+            { calibration_corrupted,        "Calibration corrupted" },
+            { mm_upd_fail,                  "Moton Module update failed" },
+            { isp_upd_fail,                 "ISP update failed" },
+            { mm_force_pause,               "Motion Module force pause" },
+            { mm_failure,                   "Motion Module failure" },
+            { usb_scp_overflow,             "USB SCP overflow" },
+            { usb_rec_overflow,             "USB REC overflow" },
+            { usb_cam_overflow,             "USB CAM overflow" },
+            { mipi_left_error,              "Left MIPI error" },
+            { mipi_right_error,             "Right MIPI error" },
+            { mipi_rt_error,                "RT MIPI error" },
+            { mipi_fe_error,                "FishEye MIPI error" },
+            { i2c_cfg_left_error,           "Left IC2 Config error" },
+            { i2c_cfg_right_error,          "Right IC2 Config error" },
+            { i2c_cfg_rt_error,             "RT IC2 Config error" },
+            { i2c_cfg_fe_error,             "FishEye IC2 Config error" },
+            { stream_not_start_z,           "Depth stream start failure" },
+            { stream_not_start_y,           "IR stream start failure" },
+            { stream_not_start_cam,         "Camera stream start failure" },
+            { rec_error,                    "REC error" },
         };
 
     } // librealsense::ds

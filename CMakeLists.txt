@@ -1,8 +1,6 @@
 #  minimum required cmake version: 3.1.0
 cmake_minimum_required(VERSION 3.1.0)
 
-project(librealsense2)
-
 macro(info msg)
     message(STATUS "Info: ${msg}")
 endmacro()
@@ -10,6 +8,17 @@ endmacro()
 macro(infoValue variableName)
     info("${variableName}=\${${variableName}}")
 endmacro()
+
+option(BUILD_WITH_CUDA "Enable CUDA" OFF)
+
+if(BUILD_WITH_CUDA)
+    info("Building with CUDA requires CMake v3.8+")
+    cmake_minimum_required(VERSION 3.8.0)
+    project(librealsense2 LANGUAGES CXX C CUDA)
+else()
+    project(librealsense2 LANGUAGES CXX C)
+endif()
+
 
 ##################################################################
 # Parse librealsense version and assign it to CMake variables    #
@@ -45,8 +54,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
 CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
-if(COMPILER_SUPPORTS_CXX11)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+if(COMPILER_SUPPORTS_CXX11)   
+    set(CMAKE_CXX_STANDARD 11)
+    set(CMAKE_CUDA_STANDARD 11)
 elseif(COMPILER_SUPPORTS_CXX0X)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
 endif()
@@ -55,7 +65,7 @@ endif()
 # save-to-disk targets.
 option(BUILD_GRAPHICAL_EXAMPLES "Build graphical examples and tools." ON)
 
-option(BUILD_WITH_OPENMP "Use OpenMP" ON)
+option(BUILD_WITH_OPENMP "Use OpenMP" OFF)
 
 option(USE_SYSTEM_LIBUSB "Use the distribution libusb package" ON)
 if (WIN32)
@@ -79,7 +89,7 @@ if(ANDROID_NDK_TOOLCHAIN_INCLUDED)
     set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fPIC -pedantic -g -D_BSD_SOURCE")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -pedantic -g -Wno-missing-field-initializers")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch -Wno-multichar")
-
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fPIE -pie")
     message(STATUS "Prepare RealSense SDK for Android OS (${ANDROID_NDK_ABI_NAME})")
 endif()
 
@@ -92,7 +102,11 @@ if(BUILD_WITH_OPENMP)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
     endif()
+elseif(UNIX)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 endif()
+
 
 option(BUILD_WITH_TM2 "Build with support for Intel TM2 tracking device" OFF)
 
@@ -101,6 +115,21 @@ option(BUILD_EASYLOGGINGPP "Build EasyLogging++ as a part of the build" ON)
 if (BUILD_EASYLOGGINGPP)
     add_definitions(-DBUILD_EASYLOGGINGPP)
 endif()
+
+if (BUILD_WITH_CUDA)
+    find_package(CUDA REQUIRED)
+    if(CUDA_FOUND)
+        include_directories(${CUDA_INCLUDE_DIRS})
+        SET(ALL_CUDA_LIBS ${CUDA_LIBRARIES} ${CUDA_cusparse_LIBRARY} ${CUDA_cublas_LIBRARY})
+        SET(LIBS ${LIBS} ${ALL_CUDA_LIBS})
+        message(STATUS "CUDA_LIBRARIES: ${CUDA_INCLUDE_DIRS} ${ALL_CUDA_LIBS}")
+        set(CUDA_PROPAGATE_HOST_FLAGS OFF)
+        set(CUDA_SEPARABLE_COMPILATION ON)
+        set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS}; -O3 -gencode arch=compute_53,code=sm_53
+        -gencode arch=compute_62,code=sm_62;")
+    endif()
+endif()
+
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
 
@@ -119,6 +148,7 @@ set(REALSENSE_CPP
     src/error-handling.cpp
     src/hw-monitor.cpp
     src/image.cpp
+    src/image_avx.cpp
     src/ivcam/ivcam-private.cpp
     src/log.cpp
     src/rs.cpp
@@ -138,6 +168,7 @@ set(REALSENSE_CPP
     src/proc/decimation-filter.cpp
     src/proc/spatial-filter.cpp
     src/proc/temporal-filter.cpp
+    src/proc/hole-filling-filter.cpp
     src/proc/disparity-transform.cpp
     src/source.cpp
     src/ds5/ds5-options.cpp
@@ -149,12 +180,9 @@ set(REALSENSE_CPP
     src/ds5/ds5-color.cpp
     src/ds5/ds5-active.cpp
     src/ds5/ds5-factory.cpp
-    src/win/win-helpers.cpp
-    src/win/win-uvc.cpp
-    src/win/win-usb.cpp
-    src/win/win-hid.cpp
-    src/win/win-backend.cpp
 
+    src/l500/l500.cpp
+    src/l500/l500-private.cpp
 
     src/ds5/advanced_mode/rs_advanced_mode.cpp
     src/ds5/advanced_mode/presets.cpp
@@ -170,6 +198,53 @@ set(REALSENSE_CPP
     src/media/playback/playback_device.cpp
     src/media/playback/playback_sensor.cpp
     )
+    
+## Check for Windows Version ##
+if( (${CMAKE_SYSTEM_VERSION} EQUAL 6.1) OR (FORCE_WINUSB_UVC) ) # Windows 7
+    if (NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
+        set(DRIVERS IntelD415_win7.inf
+                    WdfCoinstaller01011.dll
+                    winusbcoinstaller2.dll
+                    )
+    
+        foreach(item IN LISTS DRIVERS)
+            add_custom_command(
+                OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${item}"
+                COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/src/win7/d415_driver/${item}" "${CMAKE_CURRENT_BINARY_DIR}/${item}"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${item}"
+            )
+        endforeach()
+    endif()
+    add_custom_target(realsense-driver ALL DEPENDS ${DRIVERS})
+    
+    list(APPEND REALSENSE_CPP
+        src/win7/win7-helpers.cpp
+        src/win7/win7-uvc.cpp
+        src/win7/win7-usb.cpp
+        src/win7/win7-hid.cpp
+        src/win7/win7-backend.cpp
+        )
+else() # Some other windows version
+    list(APPEND REALSENSE_CPP
+        src/win/win-helpers.cpp
+        src/win/win-uvc.cpp
+        src/win/win-usb.cpp
+        src/win/win-hid.cpp
+        src/win/win-backend.cpp
+        )
+endif()
+
+if (BUILD_WITH_CUDA)
+    set(REALSENSE_CU
+        src/cuda/cuda-conversion.cu
+        src/cuda/cuda-pointcloud.cu
+        )
+
+    set(REALSENSE_CUH
+        src/cuda/cuda-conversion.cuh
+        src/cuda/cuda-pointcloud.cuh
+        )
+endif()
 
 set(REALSENSE_HPP
     include/librealsense2/rs.hpp
@@ -234,6 +309,7 @@ set(REALSENSE_HPP
     src/proc/decimation-filter.h
     src/proc/spatial-filter.h
     src/proc/temporal-filter.h
+    src/proc/hole-filling-filter.h
     src/proc/syncer-processing-block.h
     src/proc/disparity-transform.h
     src/algo.h
@@ -243,6 +319,7 @@ set(REALSENSE_HPP
     src/error-handling.h
     src/hw-monitor.h
     src/image.h
+    src/image_avx.h
     src/source.h
     src/ivcam/ivcam-private.h
     src/types.h
@@ -260,13 +337,11 @@ set(REALSENSE_HPP
     src/ds5/ds5-color.h
     src/linux/backend-v4l2.h
     src/linux/backend-hid.h
-    src/win/win-helpers.h
-    src/win/win-uvc.h
-    src/win/win-usb.h
-    src/win/win-hid.h
-    src/win/win-backend.h
     src/api.h
     src/core/serialization.h
+
+    src/l500/l500.h
+    src/l500/l500-private.h
 
     src/media/record/record_device.h
     src/media/record/record_sensor.h
@@ -285,22 +360,83 @@ set(REALSENSE_HPP
     src/media/ros/ros_file_format.h
 )
 
+## Check for Windows Version ##
+if( ${CMAKE_SYSTEM_VERSION} EQUAL 6.1 ) # Windows 7
+    list(APPEND REALSENSE_HPP
+        src/win7/win7-helpers.h
+        src/win7/win7-uvc.h
+        src/win7/win7-usb.h
+        src/win7/win7-hid.h
+        src/win7/win7-backend.h
+        )
+else() # Some other windows version
+    list(APPEND REALSENSE_HPP
+        src/win/win-helpers.h
+        src/win/win-uvc.h
+        src/win/win-usb.h
+        src/win/win-hid.h
+        src/win/win-backend.h
+        )
+endif()
+
 if(BUILD_EASYLOGGINGPP)
     list(APPEND REALSENSE_CPP third-party/easyloggingpp/src/easylogging++.cc)
     list(APPEND REALSENSE_HPP third-party/easyloggingpp/src/easylogging++.h)
 endif()
 
+option(BUILD_WITH_STATIC_CRT "Build with static link CRT" ON)
+
 if(WIN32)
-    source_group("Source Files\\Backend" FILES
-        src/win/win-helpers.cpp
-        src/win/win-uvc.cpp
-        src/win/win-usb.cpp
-        src/win/win-hid.cpp
-        src/win/win-backend.cpp
-        src/linux/backend-v4l2.cpp
-        src/linux/backend-hid.cpp
-        src/backend.cpp
-        )
+    ## Check for Windows Version ##
+    if( ${CMAKE_SYSTEM_VERSION} EQUAL 6.1 ) # Windows 7
+        source_group("Source Files\\Backend" FILES
+            src/win7/win7-helpers.cpp
+            src/win7/win7-uvc.cpp
+            src/win7/win7-usb.cpp
+            src/win7/win7-hid.cpp
+            src/win7/win7-backend.cpp
+            src/linux/backend-v4l2.cpp
+            src/linux/backend-hid.cpp
+            src/backend.cpp
+            )
+
+        source_group("Header Files\\Backend" FILES
+            src/win7/win7-helpers.h
+            src/win7/win7-uvc.h
+            src/win7/win7-usb.h
+            src/win7/win7-hid.h
+            src/win7/win7-backend.h
+            src/linux/backend-v4l2.h
+            src/linux/backend-hid.h
+            src/backend.h)
+
+    else() # Some other windows version
+        source_group("Source Files\\Backend" FILES
+            src/win/win-helpers.cpp
+            src/win/win-uvc.cpp
+            src/win/win-usb.cpp
+            src/win/win-hid.cpp
+            src/win/win-backend.cpp
+            src/linux/backend-v4l2.cpp
+            src/linux/backend-hid.cpp
+            src/backend.cpp
+            src/win7/win7-helpers.cpp
+            src/win7/win7-uvc.cpp
+            src/win7/win7-usb.cpp
+            src/win7/win7-hid.cpp
+            src/win7/win7-backend.cpp
+            )
+
+        source_group("Header Files\\Backend" FILES
+            src/win/win-helpers.h
+            src/win/win-uvc.h
+            src/win/win-usb.h
+            src/win/win-hid.h
+            src/win/win-backend.h
+            src/linux/backend-v4l2.h
+            src/linux/backend-hid.h
+            src/backend.h)
+    endif()
 
     source_group("Source Files\\Logging" FILES
         third-party/easyloggingpp/src/easylogging++.cc
@@ -313,16 +449,6 @@ if(WIN32)
         src/media/playback/playback_device.cpp
         src/media/playback/playback_sensor.cpp
         )
-
-    source_group("Header Files\\Backend" FILES
-        src/win/win-helpers.h
-        src/win/win-uvc.h
-        src/win/win-usb.h
-        src/win/win-hid.h
-        src/win/win-backend.h
-        src/linux/backend-v4l2.h
-        src/linux/backend-hid.h
-        src/backend.h)
 
     source_group("Header Files\\API" FILES
         include/librealsense2/rs.hpp
@@ -340,7 +466,6 @@ if(WIN32)
         include/librealsense2/h/rs_processing.h
         include/librealsense2/h/rs_record_playback.h
         include/librealsense2/h/rs_pipeline.h
-        include/librealsense2/h/rs_streaming.h
         include/librealsense2/h/rs_internal.h
 
         include/librealsense2/rsutil.h
@@ -393,6 +518,9 @@ if(WIN32)
         )
 
     source_group("Source Files\\Devices" FILES
+        src/l500/l500.cpp
+        src/l500/l500-private.cpp
+
         src/ds5/ds5-device.cpp
         src/ds5/ds5-factory.cpp
         src/ds5/ds5-options.cpp
@@ -419,6 +547,9 @@ if(WIN32)
         )
 
     source_group("Header Files\\Devices" FILES
+        src/l500/l500.h
+        src/l500/l500-private.h
+
         src/ds5/ds5-device.h
         src/ds5/ds5-options.h
         src/ds5/ds5-private.h
@@ -458,6 +589,7 @@ if(WIN32)
         src/proc/decimation-filter.cpp
         src/proc/spatial-filter.cpp
         src/proc/temporal-filter.cpp
+        src/proc/hole-filling-filter.cpp
         src/proc/syncer-processing-block.cpp
         src/proc/disparity-transform.cpp
         )
@@ -473,25 +605,35 @@ if(WIN32)
         src/proc/temporal-filter.h
         src/proc/syncer-processing-block.h
         src/proc/disparity-transform.h
+        src/proc/hole-filling-filter.h
         )
 
-    foreach(flag_var
-            CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-            CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
-            CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
-            CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO)
-        if(${flag_var} MATCHES "/MD")
-            string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-        endif(${flag_var} MATCHES "/MD")
-    endforeach(flag_var)
+    if(BUILD_WITH_STATIC_CRT)
+        foreach(flag_var
+                CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+                CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
+                CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+                CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO)
+            if(${flag_var} MATCHES "/MD")
+                string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+            endif(${flag_var} MATCHES "/MD")
+        endforeach(flag_var)
+    endif()
 else()
 
 endif()
 
 option(FORCE_LIBUVC "Explicitly turn-on libuvc backend" OFF)
+option(FORCE_WINUSB_UVC "Explicitly turn-on winusb_uvc (for win7) backend" OFF)
 
 if(WIN32)
-    set(BACKEND RS2_USE_WMF_BACKEND)
+    ## Check for Windows Version ##
+    if( ${CMAKE_SYSTEM_VERSION} EQUAL 6.1 ) # Windows 7
+        set(FORCE_WINUSB_UVC ON)
+    else() # Some other windows version
+        set(BACKEND RS2_USE_WMF_BACKEND)
+    endif()
+
     set(REALSENSE_DEF CMake/realsense.def)
     # Makes VS15 find the DLL when trying to run examples/tests
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -500,13 +642,38 @@ if(WIN32)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
     add_definitions(-D__SSSE3__ -D_CRT_SECURE_NO_WARNINGS)
-
     set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 elseif(APPLE)
     set(FORCE_LIBUVC ON)
 else()
     set(BACKEND RS2_USE_V4L2_BACKEND)
 endif()
+
+
+if(FORCE_WINUSB_UVC)
+    set(BACKEND RS2_USE_WINUSB_UVC_BACKEND)
+#
+    list(APPEND REALSENSE_CPP
+		src/win7/winusb_uvc/winusb_uvc.cpp
+    )
+#
+    list(APPEND REALSENSE_HPP
+		src/libuvc/utlist.h
+		src/win7/winusb_uvc/winusb_uvc.h
+    )
+#
+	source_group("Source Files\\WinUsbUvc" FILES
+		src/win7/winusb_uvc/winusb_uvc.cpp
+    )
+#
+    source_group("Header Files\\WinUsbUvc" FILES
+		src/libuvc/utlist.h
+		src/win7/winusb_uvc/winusb_uvc.h
+    )
+#
+#    message( WARNING "Using winusb_uvc!" )
+endif()
+
 
 if(FORCE_LIBUVC)
     set(BACKEND RS2_USE_LIBUVC_BACKEND)
@@ -555,6 +722,7 @@ endif()
 if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj /wd4819")
     add_definitions(-D_UNICODE)
+    set(LRS_TRY_USE_AVX true)
 endif()
 
 add_definitions(-D${BACKEND} -DUNICODE)
@@ -582,14 +750,15 @@ if(UNIX)
 
     execute_process(COMMAND ${CMAKE_C_COMPILER} -dumpmachine OUTPUT_VARIABLE MACHINE)
     if(${MACHINE} MATCHES "arm-linux-gnueabihf")
-      set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mfpu=neon -mfloat-abi=hard -ftree-vectorize")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -mfloat-abi=hard -ftree-vectorize")
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mfpu=neon -mfloat-abi=hard -ftree-vectorize")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -mfloat-abi=hard -ftree-vectorize")
     elseif(${MACHINE} MATCHES "aarch64-linux-gnu")
-      set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mstrict-align -ftree-vectorize")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mstrict-align -ftree-vectorize")
-    else(${MACHINE} MATCHES "arm-linux-gnueabihf")
-      set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mssse3")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mssse3")
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mstrict-align -ftree-vectorize")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mstrict-align -ftree-vectorize")
+    else()
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mssse3")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mssse3")
+        set(LRS_TRY_USE_AVX true)
     endif(${MACHINE} MATCHES "arm-linux-gnueabihf")
 endif()
 
@@ -639,15 +808,17 @@ if (BUILD_WITH_TM2)
     list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
     find_package(libtm REQUIRED)
 
-    foreach(flag_var
-            CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-            CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
-            CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
-            CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO)
-        if(${flag_var} MATCHES "/MD")
-            string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-        endif(${flag_var} MATCHES "/MD")
-    endforeach(flag_var)
+    if(BUILD_WITH_STATIC_CRT)
+        foreach(flag_var
+                CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+                CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
+                CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+                CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO)
+            if(${flag_var} MATCHES "/MD")
+                string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+            endif(${flag_var} MATCHES "/MD")
+        endforeach(flag_var)
+    endif()
 
     list(APPEND REALSENSE_HPP
     src/tm2/tm-context.h
@@ -656,7 +827,7 @@ if (BUILD_WITH_TM2)
     src/tm2/tm-conversions.h
     src/tm2/controller_event_serializer.h
     )
-    
+
     list(APPEND REALSENSE_CPP
     src/tm2/tm-context.cpp
     src/tm2/tm-device.cpp
@@ -674,24 +845,28 @@ if (BUILD_WITH_TM2)
     )
 endif()
 
+if(LRS_TRY_USE_AVX)
+    set_source_files_properties(src/image_avx.cpp PROPERTIES COMPILE_FLAGS -mavx2)
+endif()
+
 option(BUILD_SHARED_LIBS "Build shared library" ON)
 if(BUILD_SHARED_LIBS)
     if(WIN32)
         add_library(realsense2 SHARED
-            ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_DEF}
+            ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_DEF} ${REALSENSE_CU} ${REALSENSE_CUH}
             src/res/resource.h
-            src/res/librealsense.rc)
-
+            src/res/librealsense.rc) 
         source_group("Resources" FILES
         src/res/resource.h
         src/res/librealsense.rc
         )
     else()
-        add_library(realsense2 SHARED ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_DEF})
+        add_library(realsense2 SHARED ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_CU} ${REALSENSE_CUH} ${REALSENSE_DEF})
     endif()
 else()
-    add_library(realsense2 STATIC ${REALSENSE_CPP} ${REALSENSE_HPP})
+        add_library(realsense2 STATIC ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_CU} ${REALSENSE_CUH})
 endif()
+
 
 if(BUILD_WITH_TM2)
     target_compile_definitions(realsense2 PRIVATE WITH_TRACKING=1 BUILD_STATIC=1)
@@ -733,14 +908,27 @@ target_include_directories(realsense2 PRIVATE
         ${BOOST_INCLUDE_PATH}
         ${LZ4_INCLUDE_PATH}
         )
+if( (${CMAKE_SYSTEM_VERSION} EQUAL 6.1) OR (FORCE_WINUSB_UVC) ) # Windows 7
+    add_dependencies(realsense2 realsense-driver)
+    set_target_properties (realsense-driver PROPERTIES
+        FOLDER Library
+    )
+endif()
 
 if (USE_SYSTEM_LIBUSB)
     target_include_directories(realsense2 PRIVATE ${LIBUSB1_INCLUDE_DIRS})
 endif()
 
-target_include_directories(realsense2 PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                                            $<INSTALL_INTERFACE:include>
-                                     PRIVATE ${USB_INCLUDE_DIRS})
+target_include_directories(realsense2 PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  PRIVATE ${USB_INCLUDE_DIRS})
+
+set_target_properties(realsense2
+  PROPERTIES
+  PUBLIC_HEADER
+  "include/librealsense2/rs.hpp;include/librealsense2/rs.h;include/librealsense2/h/rs_context.h;include/librealsense2/h/rs_device.h;include/librealsense2/h/rs_frame.h;include/librealsense2/h/rs_types.h;include/librealsense2/h/rs_sensor.h;include/librealsense2/h/rs_option.h;include/librealsense2/h/rs_processing.h;include/librealsense2/h/rs_record_playback.h;include/librealsense2/h/rs_pipeline.h;include/librealsense2/h/rs_internal.h;include/librealsense2/rsutil.h;include/librealsense2/rs_advanced_mode.h;include/librealsense2/h/rs_advanced_mode_command.h;include/librealsense2/hpp/rs_types.hpp;include/librealsense2/hpp/rs_context.hpp;include/librealsense2/hpp/rs_device.hpp;include/librealsense2/hpp/rs_frame.hpp;include/librealsense2/hpp/rs_processing.hpp;include/librealsense2/hpp/rs_pipeline.hpp;include/librealsense2/hpp/rs_record_playback.hpp;include/librealsense2/hpp/rs_sensor.hpp;include/librealsense2/hpp/rs_internal.hpp;include/librealsense2/rs_advanced_mode.hpp"
+  )
 
 set(CMAKECONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/realsense2")
 
@@ -749,6 +937,7 @@ EXPORT realsense2Targets
 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_PREFIX}/include/librealsense2"
 )
 
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/librealsense2 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
@@ -770,13 +959,20 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/realsense2ConfigVersion.cmake"
 
 install(CODE "execute_process(COMMAND ldconfig)")
 
-option(BUILD_UNIT_TESTS "Build realsense unit tests." ON)
+option(BUILD_UNIT_TESTS "Build realsense unit tests. Note that when enabled, additional tests data set will be downloaded from a web server and stored in a temp directory" OFF)
 option(BUILD_EXAMPLES "Build realsense examples and tools." ON)
 option(ENFORCE_METADATA "Require WinSDK with Metadata support during compilation. Windows OS Only" OFF)
 option(BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
+option(BUILD_CSHARP_BINDINGS "Build C# bindings" OFF)
+#option(BUILD_MATLAB_BINDINGS "Build Matlab bindings" OFF)
+option(BUILD_UNITY_BINDINGS "Copy the unity project to the build folder with the required dependencies" OFF)
 option(BUILD_CV_EXAMPLES "Build OpenCV examples" OFF)
 option(BUILD_PCL_EXAMPLES "Build PCL examples" OFF)
 option(BUILD_NODEJS_BINDINGS "Build Node.js bindings" OFF)
+SET(DOTNET_VERSION_LIBRARY "3.5" CACHE STRING ".Net Version, defaulting to '3.5', the Unity wrapper currently supports only .NET 3.5")
+SET(DOTNET_VERSION_EXAMPLES "4.0" CACHE STRING ".Net Version, defaulting to '4.0'")
+
+add_subdirectory(wrappers)
 
 if((BUILD_EXAMPLES AND BUILD_GRAPHICAL_EXAMPLES) AND WIN32)
   add_subdirectory(third-party/glfw)
@@ -795,35 +991,36 @@ if (ENFORCE_METADATA)
   add_definitions(-DENFORCE_METADATA)
 endif()
 
-if (BUILD_PYTHON_BINDINGS)
-  add_subdirectory(wrappers/python)
+if (BUILD_WITH_CUDA)
+    add_definitions(-DRS2_USE_CUDA)
 endif()
 
-if (BUILD_NODEJS_BINDINGS)
-  add_subdirectory(wrappers/nodejs)
+if (BUILD_MATLAB_BINDINGS)
+  add_subdirectory(wrappers/matlab)
 endif()
 
-if (BUILD_CV_EXAMPLES)
-  add_subdirectory(wrappers/opencv)
-endif()
-
-if (BUILD_PCL_EXAMPLES)
-  add_subdirectory(wrappers/pcl)
-endif()
 
 # Check for unreferenced files
 FILE(GLOB_RECURSE AllSources RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
-  "src/*.c" "src/*.cpp" "src/*.cc" "src/*.c++"
-  "src/*.h" "src/*.hpp" "src/*.hh" "src/*.h++")
+  "src/*.c" "src/*.cpp" "src/*.cc" "src/*.c++" "src/*.cu"
+  "src/*.h" "src/*.hpp" "src/*.hh" "src/*.h++" "src/*.cuh")
 #message ( "${AllSources}" )
 #message ( "${REALSENSE_CPP}" )
 #message ( "${REALSENSE_HPP}" )
-foreach(afile ${REALSENSE_CPP})
-  list(REMOVE_ITEM AllSources ${afile})
-endforeach(afile)
-foreach(afile ${REALSENSE_HPP})
-  list(REMOVE_ITEM AllSources ${afile})
-endforeach(afile)
+if (BUILD_WITH_CUDA)
+    foreach(afile ${REALSENSE_CPP})
+      list(REMOVE_ITEM AllSources ${afile})
+    endforeach(afile)
+    foreach(afile ${REALSENSE_HPP})
+      list(REMOVE_ITEM AllSources ${afile})
+    endforeach(afile)
+    foreach(afile ${REALSENSE_CU})
+      list(REMOVE_ITEM AllSources ${afile})
+    endforeach(afile)
+    foreach(afile ${REALSENSE_CUH})
+      list(REMOVE_ITEM AllSources ${afile})
+    endforeach(afile)
+endif()
 list(LENGTH AllSources ignore_count)
 #if(${ignore_count} GREATER 0)
 #  if(${ignore_count} GREATER 1)

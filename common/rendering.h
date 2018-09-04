@@ -126,6 +126,11 @@ namespace rs2
         }
     };
 
+    inline float3 cross(const float3& a, const float3& b)
+    {
+        return { a.y * b.z - b.y * a.z, a.x * b.z - b.x * a.z, a.x * b.y - a.y * b.x };
+    }
+
     inline float evaluate_plane(const plane& plane, const float3& point)
     {
         return plane.a * point.x + plane.b * point.y + plane.c * point.z + plane.d;
@@ -1055,6 +1060,8 @@ namespace rs2
                     if (auto colorized_frame = colorize->colorize(frame).as<video_frame>())
                     {
                         data = colorized_frame.get_data();
+                        // Override the first pixel in the colorized image for occlusion invalidation.
+                        memset((void*)data,0, colorized_frame.get_bytes_per_pixel());
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
                                      colorized_frame.get_width(),
                                      colorized_frame.get_height(),
@@ -1075,8 +1082,8 @@ namespace rs2
             case RS2_FORMAT_YUYV: // Display YUYV by showing the luminance channel and packing chrominance into ignored alpha channel
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, data);
                 break;
-            case RS2_FORMAT_UYVY: // Use one color component only to avoid costly UVUY->RGB conversion
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_GREEN, GL_UNSIGNED_SHORT, data);
+            case RS2_FORMAT_UYVY: // Use luminance component only to avoid costly UVUY->RGB conversion
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width, height, 0, GL_LUMINANCE, GL_UNSIGNED_SHORT, data);
                 break;
             case RS2_FORMAT_RGB8: case RS2_FORMAT_BGR8: // Display both RGB and BGR by interpreting them RGB, to show the flipped byte ordering. Obviously, GL_BGR could be used on OpenGL 1.2+
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
