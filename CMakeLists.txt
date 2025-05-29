@@ -1,8 +1,7 @@
-#  minimum required cmake version: 3.1.0
 cmake_minimum_required(VERSION 3.28.3)
 
 set( LRS_TARGET realsense2 )
-project( ${LRS_TARGET} VERSION 2.54.1 LANGUAGES CXX C )
+project( ${LRS_TARGET} VERSION 2.54.3 LANGUAGES CXX C )
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE "Release")
 
