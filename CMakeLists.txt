@@ -1,8 +1,10 @@
 #  minimum required cmake version: 3.1.0
-cmake_minimum_required(VERSION 3.1.0)
+cmake_minimum_required(VERSION 3.28.3)
 
 set( LRS_TARGET realsense2 )
-project( ${LRS_TARGET} LANGUAGES CXX C )
+project( ${LRS_TARGET} VERSION 2.54.1 LANGUAGES CXX C )
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_BUILD_TYPE "Release")
 
 # Allow librealsense2 and all of the nested project to include the main repo folder
 set(REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -99,3 +101,19 @@ if(IMPORT_DEPTH_CAM_FW)
 endif()
 
 include(CMake/embedd_udev_rules.cmake)
+
+set(CPACK_PACKAGE_NAME librealsense2)
+set(CPACK_PACKAGE_CONTACT "Aaron Wood <aaron.wood@plusonerobotics.com>")
+set(CPACK_GENERATOR DEB)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libusb-1.0-0 (>= 2:1.0.16), libudev1 (>= 183), libc6 (>= 2.29), libgcc-s1 (>= 3.0), libstdc++6 (>= 9)")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "librealsense2-udev-rules")
+set(CPACK_DEBIAN_PACKAGE_SECTION libs)
+set(CPACK_DEBIAN_PACKAGE_PRIORITY extra)
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE amd64)
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE https://github.com/plusone-robotics/librealsense)
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "Intel(R) RealSense(tm) Cross Platform API - runtime
+This package contains the shared library.
+To interact with an attached realsense device, install
+the udev rules to configure device permissions (recommended).")
+include(CPack)
